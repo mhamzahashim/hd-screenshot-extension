@@ -156,7 +156,20 @@ async function performFullPageCapture(tabId, windowId) {
   try {
     console.log('Starting full page capture...');
 
-    // Get page dimensions
+    // STEP 1: Inject CSS to hide fixed/sticky elements (prevent overlaps)
+    await chrome.scripting.insertCSS({
+      target: { tabId: tabId },
+      css: `
+        * {
+          position: static !important;
+        }
+        body, html {
+          overflow: visible !important;
+        }
+      `
+    }).catch(err => console.log('CSS injection (non-critical):', err));
+
+    // STEP 2: Get page dimensions
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tabId },
       func: () => {
@@ -175,32 +188,32 @@ async function performFullPageCapture(tabId, windowId) {
     console.log('Page dimensions:', dimensions);
     console.log(`  scrollHeight: ${dimensions.scrollHeight}`);
     console.log(`  clientHeight: ${dimensions.clientHeight}`);
-    console.log(`  scrollWidth: ${dimensions.scrollWidth}`);
-    console.log(`  clientWidth: ${dimensions.clientWidth}`);
 
     const screenshots = [];
     const numScreenshots = Math.ceil(dimensions.scrollHeight / dimensions.clientHeight);
 
-    console.log(`Will take ${numScreenshots} screenshots (${dimensions.scrollHeight} / ${dimensions.clientHeight})`);
+    console.log(`Will take ${numScreenshots} screenshots`);
 
-    // Show single notification (no progress details)
+    // Show notification
     showNotification('Capturing Full Page...', 'Please wait, capturing entire page in HD quality.');
 
-    // Scroll and capture with proper delays (Chrome API limit: 2 calls/second)
+    // STEP 3: Scroll and capture with proper delays (Chrome API limit: 2 calls/second)
     for (let i = 0; i < numScreenshots; i++) {
       const scrollY = i * dimensions.clientHeight;
+      const isLast = (i === numScreenshots - 1);
+
       console.log(`Capturing section ${i + 1}/${numScreenshots}...`);
 
-      // Scroll to position
+      // Scroll to position using instant behavior
       await chrome.scripting.executeScript({
         target: { tabId: tabId },
         func: (y) => {
-          window.scrollTo({ top: y, behavior: 'instant' });
+          window.scrollTo({ top: y, left: 0, behavior: 'instant' });
         },
         args: [scrollY]
       });
 
-      // Wait for page to render (300ms)
+      // Wait for page to render
       await new Promise(resolve => setTimeout(resolve, 300));
 
       // Capture screenshot at maximum quality
@@ -209,25 +222,42 @@ async function performFullPageCapture(tabId, windowId) {
         quality: 100
       });
 
-      screenshots.push(dataUrl);
+      // Store screenshot with metadata
+      screenshots.push({
+        dataUrl: dataUrl,
+        offsetY: scrollY,
+        isLast: isLast
+      });
 
-      // IMPORTANT: Wait 600ms between captures to respect Chrome's rate limit (2 per second)
-      // Only wait if there are more screenshots to take
-      if (i < numScreenshots - 1) {
+      // Wait between captures to respect Chrome's rate limit (2 per second)
+      if (!isLast) {
         await new Promise(resolve => setTimeout(resolve, 600));
       }
     }
 
     console.log(`Total screenshots captured: ${screenshots.length}`);
 
-    // Restore original scroll position
+    // STEP 4: Restore original scroll position
     await chrome.scripting.executeScript({
       target: { tabId: tabId },
-      func: (x, y) => window.scrollTo(x, y),
+      func: (x, y) => window.scrollTo({ top: y, left: x, behavior: 'instant' }),
       args: [dimensions.scrollX, dimensions.scrollY]
     });
 
-    console.log('Scroll position restored, opening editor...');
+    // STEP 5: Remove injected CSS
+    await chrome.scripting.removeCSS({
+      target: { tabId: tabId },
+      css: `
+        * {
+          position: static !important;
+        }
+        body, html {
+          overflow: visible !important;
+        }
+      `
+    }).catch(err => console.log('CSS removal (non-critical):', err));
+
+    console.log('Scroll restored, CSS removed, opening editor...');
 
     // Show completion notification
     showNotification('Full Page Captured!', 'Opening editor with your HD full-page screenshot.');

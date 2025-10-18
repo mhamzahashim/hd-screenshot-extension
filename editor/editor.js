@@ -103,30 +103,43 @@ function loadImage(dataUrl, captureType, extraData) {
       screenshotImage = img;
 
       if (captureType === 'area' && extraData) {
-        // Crop to selected area - MUST use integers!
+        // Crop to selected area - CORRECT DPR METHOD
         const { x, y, width, height, dpr } = extraData;
 
-        console.log('CSS Selection:', { x, y, width, height });
-        console.log('DPR:', dpr);
-        console.log('Captured image:', img.width, 'x', img.height);
+        console.log('Original CSS selection:', { x, y, width, height });
+        console.log('Device Pixel Ratio:', dpr);
+        console.log('Captured image size:', img.width, 'x', img.height);
 
-        // ROUND TO INTEGERS - fractional pixels cause blur!
-        const cropX = Math.round(x * dpr);
-        const cropY = Math.round(y * dpr);
-        const cropWidth = Math.round(width * dpr);
-        const cropHeight = Math.round(height * dpr);
+        // Scale selection coordinates to match captured image (which is at DPR)
+        const scaledX = Math.round(x * dpr);
+        const scaledY = Math.round(y * dpr);
+        const scaledWidth = Math.round(width * dpr);
+        const scaledHeight = Math.round(height * dpr);
 
-        console.log('Cropping (INTEGERS):', { cropX, cropY, cropWidth, cropHeight });
+        console.log('Scaled selection (for cropping):', { scaledX, scaledY, scaledWidth, scaledHeight });
 
-        // Set canvas to EXACT INTEGER size
-        screenshotCanvas.width = cropWidth;
-        screenshotCanvas.height = cropHeight;
-        annotationCanvas.width = cropWidth;
-        annotationCanvas.height = cropHeight;
+        // CRITICAL: Canvas size should be ORIGINAL CSS size, NOT scaled
+        screenshotCanvas.width = width;   // CSS pixels, not scaled
+        screenshotCanvas.height = height; // CSS pixels, not scaled
+        annotationCanvas.width = width;
+        annotationCanvas.height = height;
 
-        // Crop and draw at integer boundaries
-        screenshotCtx.drawImage(img, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
-        console.log('✓ SHARP - Canvas:', cropWidth, 'x', cropHeight);
+        console.log('Canvas size (CSS pixels):', width, 'x', height);
+
+        // Draw: Take the SCALED portion from source, draw to ORIGINAL-sized canvas
+        screenshotCtx.drawImage(
+          img,
+          scaledX,      // Source X (scaled)
+          scaledY,      // Source Y (scaled)
+          scaledWidth,  // Source Width (scaled)
+          scaledHeight, // Source Height (scaled)
+          0,            // Dest X
+          0,            // Dest Y
+          width,        // Dest Width (original CSS size)
+          height        // Dest Height (original CSS size)
+        );
+
+        console.log('✓ SHARP - Drew scaled source to original-sized canvas');
       } else {
         // Full visible area
         screenshotCanvas.width = img.width;
@@ -143,56 +156,77 @@ function loadImage(dataUrl, captureType, extraData) {
   });
 }
 
-// Stitch full page screenshot - PERFECT method
+// Stitch full page screenshot - CORRECT method from claude.ai
 async function stitchFullPageScreenshot(screenshots, dimensions) {
   console.log('Stitching', screenshots.length, 'sections...');
 
-  // Load first image to get dimensions
+  const { scrollHeight, clientHeight } = dimensions;
+
+  // Load first image to get actual dimensions
   const firstImg = await new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
     image.onerror = reject;
-    image.src = screenshots[0];
+    image.src = screenshots[0].dataUrl;
   });
 
   const imgWidth = firstImg.width;
   const imgHeight = firstImg.height;
 
-  console.log('Each section:', imgWidth, 'x', imgHeight);
+  console.log('Section size:', imgWidth, 'x', imgHeight);
+  console.log('Total page height:', scrollHeight);
 
-  // Calculate exact total height
-  // All images should be same height except possibly the last one
-  const totalHeight = imgHeight * (screenshots.length - 1) + imgHeight;
+  // Calculate total canvas height based on DPR
+  const dpr = imgHeight / clientHeight;
+  const totalCanvasHeight = Math.round(scrollHeight * dpr);
 
-  console.log('Creating canvas:', imgWidth, 'x', totalHeight);
+  console.log('DPR:', dpr);
+  console.log('Creating canvas:', imgWidth, 'x', totalCanvasHeight);
 
   screenshotCanvas.width = imgWidth;
-  screenshotCanvas.height = totalHeight;
+  screenshotCanvas.height = totalCanvasHeight;
   annotationCanvas.width = imgWidth;
-  annotationCanvas.height = totalHeight;
+  annotationCanvas.height = totalCanvasHeight;
 
-  // Draw first image
-  screenshotCtx.drawImage(firstImg, 0, 0);
+  // Draw each screenshot at its proper offset
+  for (let i = 0; i < screenshots.length; i++) {
+    const screenshot = screenshots[i];
 
-  // Load and draw remaining images at EXACT positions
-  let yPosition = imgHeight;
-
-  for (let i = 1; i < screenshots.length; i++) {
     const img = await new Promise((resolve, reject) => {
       const image = new Image();
       image.onload = () => resolve(image);
       image.onerror = reject;
-      image.src = screenshots[i];
+      image.src = screenshot.dataUrl;
     });
 
-    // Draw at exact Y position
-    screenshotCtx.drawImage(img, 0, yPosition);
-    yPosition += img.height;
+    const offsetY = screenshot.offsetY * dpr;
 
-    console.log('Placed section', i + 1, 'at Y:', yPosition - img.height);
+    // Calculate draw height
+    let drawHeight = img.height;
+
+    // For the last screenshot, only draw the remaining portion
+    if (screenshot.isLast) {
+      const remainingHeight = totalCanvasHeight - offsetY;
+      drawHeight = Math.min(img.height, remainingHeight);
+      console.log(`Last section: cropping to ${drawHeight}px (remaining: ${remainingHeight}px)`);
+    }
+
+    // Draw the screenshot
+    screenshotCtx.drawImage(
+      img,
+      0, 0,          // Source X, Y
+      img.width,     // Source Width
+      drawHeight,    // Source Height (may be cropped for last)
+      0,             // Dest X
+      offsetY,       // Dest Y (offset by scroll position)
+      img.width,     // Dest Width
+      drawHeight     // Dest Height
+    );
+
+    console.log(`Section ${i + 1} placed at Y: ${offsetY}, height: ${drawHeight}`);
   }
 
-  console.log('COMPLETE - Final height:', yPosition);
+  console.log('✓ Stitching complete - No overlaps');
 
   // Store result
   screenshotImage = new Image();
