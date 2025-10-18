@@ -1,0 +1,30 @@
+# OS Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# Chrome Extension packaging
+*.crx
+*.pem
+*.zip
+
+# Node modules (if you add any)
+node_modules/
+
+# Build files
+dist/
+build/
+
+# Test files
+test-page.html
